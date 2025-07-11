@@ -176,7 +176,8 @@ def main():
         print(f"Max time/frame: {max(times)*1000:.1f} ms")
 
         print(f"Average FPS: {avg_fps:.2f}")
-        imageio.mimsave(output_path, frames, fps=avg_fps)
+        if frames:
+            imageio.mimsave(output_path, frames, fps=avg_fps)
     else:
         print("No frames were processed.")
 

@@ -63,6 +63,7 @@ class CLIPSegHFModel:
         # ONNX support
         self.use_onnx = False
         self.ort_session = None
+        self.using_fp16 = False
         if onnx_model_path is not None:
             if ort is None:
                 raise ImportError(
@@ -78,7 +79,6 @@ class CLIPSegHFModel:
                 self.using_fp16 = True
 
             # load the session
-            print("Available:", ort.get_available_providers())
             so = ort.SessionOptions()
             so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             so.intra_op_num_threads = 1
@@ -90,16 +90,13 @@ class CLIPSegHFModel:
                 sess_options=so,
                 providers=["TensorrtExecutionProvider"]#, "CUDAExecutionProvider", "CPUExecutionProvider"]
             )
-            print("Session uses:", self.ort_session.get_providers())
             self.io_binding = self.ort_session.io_binding()
             self.use_onnx = True
 
             self._io_binding = None
             self._input_gpu  = None
             self._output_gpu = None
-#FIXME:
-            print(">>> ONNX inputs:", [i.name for i in self.ort_session.get_inputs()])
-            print(">>> ONNX outputs:", [o.name for o in self.ort_session.get_outputs()])    
+
 
 
     def _export_onnx(self, onnx_path: str):
@@ -258,9 +255,11 @@ class CLIPSegHFModel:
         # 1) Preprocess on GPU
         torch_inputs = self.processor(images=img, text=prompt, return_tensors="pt")
         if self.using_fp16:
-            # convert to FP16 if needed
-            torch_inputs = {k: (v.half() if k=="pixel_values" else v)
-                            for k, v in torch_inputs.items()}
+            # convert to FP16 if needed and move to device
+            torch_inputs = {
+                k: (v.half().to(self.device) if k == "pixel_values" else v.to(self.device))
+                for k, v in torch_inputs.items()
+            }
         else:
             torch_inputs = {k: v.to(self.device) for k, v in torch_inputs.items()}
 
@@ -296,12 +295,13 @@ class CLIPSegHFModel:
             raise RuntimeError(f"Unsupported logits rank: {len(out_meta.shape)}")
 
         # 5) Allocate & bind output buffer on GPU
-        output_gpu = torch.empty(out_shape, dtype=torch.float32, device=self.device)
+        out_dtype = torch.float16 if self.using_fp16 else torch.float32
+        output_gpu = torch.empty(out_shape, dtype=out_dtype, device=self.device)
         io_binding.bind_output(
             name=out_meta.name,
             device_type=self.device,
             device_id=0,
-            element_type=np.float32,
+            element_type=(np.float16 if self.using_fp16 else np.float32),
             shape=out_shape,
             buffer_ptr=output_gpu.data_ptr(),
         )

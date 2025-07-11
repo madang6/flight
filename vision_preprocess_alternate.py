@@ -168,7 +168,7 @@ class CLIPSegHFModel:
         import onnx
         from onnx import TensorProto, numpy_helper, AttributeProto
         from onnxconverter_common import float16
-
+        
         """Fully convert an ONNX model to FP16, including constants."""
 
         # 1) Load the FP32 model

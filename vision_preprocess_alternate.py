@@ -166,17 +166,48 @@ class CLIPSegHFModel:
 
     def _convert_to_fp16(self, onnx_path: str, fp16_path: str):
         import onnx
+        from onnx import TensorProto, numpy_helper, AttributeProto
         from onnxconverter_common import float16
-        """Convert an ONNX model to FP16 using the standard converter."""
+        
+        """Fully convert an ONNX model to FP16, including constants."""
 
+        # 1) Load the FP32 model
         model = onnx.load(onnx_path)
 
+        # 2) Bulk convert all ops to FP16.  Disable shape inference and
+        #    block lists so every op is visited.
         model_fp16 = float16.convert_float_to_float16(
             model,
-            keep_io_types=False,
+            keep_io_types=False,       # cast I/O to FP16 as well
+            disable_shape_infer=True,  # skip ONNX shape inference
+            op_block_list=[],          # clear default block-list
+            check_fp16_ready=False,    # override "safe op" checks
         )
 
-        onnx.save(model_fp16, fp16_path)
+        # 3) Recast all initializers to float16.  convert_float_to_float16 leaves
+        #    some of them untouched when shape inference is disabled.
+        new_inits = []
+        for init in model_fp16.graph.initializer:
+            if init.data_type == TensorProto.FLOAT:
+                arr32 = numpy_helper.to_array(init)
+                arr16 = arr32.astype("float16")
+                new_inits.append(numpy_helper.from_array(arr16, init.name))
+            else:
+                new_inits.append(init)
+        model_fp16.graph.ClearField("initializer")
+        model_fp16.graph.initializer.extend(new_inits)
+
+        # 4) Recast any Constant nodes embedded in the graph to float16
+        for node in model_fp16.graph.node:
+            if node.op_type == "Constant":
+                for attr in node.attribute:
+                    if attr.type == AttributeProto.TENSOR and attr.t.data_type == TensorProto.FLOAT:
+                        arr32 = numpy_helper.to_array(attr.t)
+                        arr16 = arr32.astype("float16")
+                        attr.t.CopyFrom(numpy_helper.from_array(arr16, attr.t.name))
+
+        # 5) Save the new FP16 model
+        onnx.save_model(model_fp16, fp16_path)
 
     def _rescale_global(self, arr: np.ndarray) -> np.ndarray:
         """

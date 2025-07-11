@@ -166,48 +166,17 @@ class CLIPSegHFModel:
 
     def _convert_to_fp16(self, onnx_path: str, fp16_path: str):
         import onnx
-        from onnx import TensorProto, numpy_helper, AttributeProto
         from onnxconverter_common import float16
-        """
-        1) Convert every op to FP16 (no block-list, no safety checks),
-        2) Skip the shape-inference pass,
-        3) Then *manually* cast ALL initializers + Constant nodes to float16.
-        """
-        # load
+        """Convert an ONNX model to FP16 using the standard converter."""
+
         model = onnx.load(onnx_path)
 
-        # bulk convert
         model_fp16 = float16.convert_float_to_float16(
             model,
-            keep_io_types=False,       # cast I/O to FP16 as well
-            disable_shape_infer=True,  # skip the ONNX shape-inference pass
-            op_block_list=[],          # clear default block-list
-            check_fp16_ready=False     # override “safe op” checks
+            keep_io_types=False,
         )
 
-        # 1) recast all initializers
-        new_inits = []
-        for init in model_fp16.graph.initializer:
-            if init.data_type == TensorProto.FLOAT:
-                arr32 = numpy_helper.to_array(init)
-                arr16 = arr32.astype("float16")
-                new_inits.append(numpy_helper.from_array(arr16, init.name))
-            else:
-                new_inits.append(init)
-        model_fp16.graph.ClearField("initializer")
-        model_fp16.graph.initializer.extend(new_inits)
-
-        # 2) recast any Constant nodes
-        for node in model_fp16.graph.node:
-            if node.op_type == "Constant":
-                for attr in node.attribute:
-                    if attr.type == AttributeProto.TENSOR and attr.t.data_type == TensorProto.FLOAT:
-                        arr32 = numpy_helper.to_array(attr.t)
-                        arr16 = arr32.astype("float16")
-                        attr.t.CopyFrom(numpy_helper.from_array(arr16, attr.t.name))
-
-        # save out
-        onnx.save_model(model_fp16, fp16_path)
+        onnx.save(model_fp16, fp16_path)
 
     def _rescale_global(self, arr: np.ndarray) -> np.ndarray:
         """
